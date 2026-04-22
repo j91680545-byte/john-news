@@ -1,0 +1,41 @@
+name: Daily John News Update
+
+on:
+  schedule:
+    # Runs every day at 08:00 UTC
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+    # Also allows manual trigger from GitHub UI
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Generate fresh index.html
+        run: python generate.py index.html
+
+      - name: Install surge
+        run: npm install -g surge
+
+      - name: Deploy to surge.sh
+        env:
+          SURGE_LOGIN: ${{ secrets.SURGE_LOGIN }}
+          SURGE_TOKEN: ${{ secrets.SURGE_TOKEN }}
+        run: surge . john-is-great.surge.sh
+
+      - name: Commit updated index.html
+        run: |
+          git config user.name  "John News Bot"
+          git config user.email "bot@john-news.io"
+          git add index.html
+          git diff --cached --quiet || git commit -m "chore: daily headline refresh $(date -u +%Y-%m-%d)"
+          git push
