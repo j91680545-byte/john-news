@@ -1,58 +1,104 @@
 #!/usr/bin/env python3
 """
 John News generator.
-Fetches current HN front page, John-ifies every headline, and writes index.html.
+Fetches current HN front page, asks Claude to write a custom John-ification
+for every headline, then writes index.html.
 """
 
 import re
+import json
 import html as html_module
 import urllib.request
-import urllib.error
 import sys
+import os
+
 
 # ---------------------------------------------------------------------------
-# John-ification templates.
-# Applied round-robin by story index so output is deterministic per run.
+# Fallback suffixes — used if the Claude API is unavailable
 # ---------------------------------------------------------------------------
-SUFFIXES = [
-    "— John Already Knew This",
-    "— John Predicted This Last Year",
-    "— John's Version Is Better",
-    "— John Wrote a Better Implementation Over the Weekend",
-    "— John Called This Three Years Ago",
-    "— John's PR Review Improved It by 40%",
-    "— John Was Not Surprised",
-    "— John Had Already Solved This",
-    "— John's Fork Has Twice the Stars",
-    "— John Reviewed This and Found Three More Issues",
-    "— John's Explanation Remains the Clearest Ever Written",
-    "— John Prototyped This Last Quarter",
-    "— John Had Been Saying This for Years",
-    "— Nobody Told John — He Just Knew",
-    "— John's Implementation Uses 40% Less Memory",
-    "— John Suggested This in a Slack Message Two Years Ago",
-    "— John Peer-Reviewed This and Improved the Algorithm",
-    "— John Benchmarked This Against Himself and Won",
-    "— John Closed a Related PR Before Breakfast",
-    "— John Nodded Approvingly Upon Reading This",
-    "— John Not Only Read This, He Cited Three Errors in the Comments",
-    "— John's Mental Model of This Is Better Than the Paper",
-    "— John Migrated His Entire Stack Away from This Last Year",
-    "— John Filed This Bug in 2021 and Was Told It Was By Design",
-    "— John's README on This Topic Has More Stars Than the Repo Itself",
-    "— John Demoed a Working Prototype of This at Last Week's Standup",
-    "— John Quietly Fixed the Underlying Issue Six Months Ago",
-    "— John Read the Spec, Found a Gap, and Submitted a Patch",
-    "— John's Architecture Diagram of This Made Two Engineers Cry",
-    "— John Agrees, Which Settles the Debate",
+FALLBACK_SUFFIXES = [
+    "John Already Knew This",
+    "John Predicted This Last Year",
+    "John's Version Is Better",
+    "John Wrote a Better Implementation Over the Weekend",
+    "John Called This Three Years Ago",
+    "John's PR Review Improved It by 40%",
+    "John Was Not Surprised",
+    "John Had Already Solved This",
+    "John's Fork Has Twice the Stars",
+    "John Reviewed This and Found Three More Issues",
+    "John's Explanation Remains the Clearest Ever Written",
+    "John Prototyped This Last Quarter",
+    "John Had Been Saying This for Years",
+    "Nobody Told John, He Just Knew",
+    "John's Implementation Uses 40% Less Memory",
+    "John Suggested This in a Slack Message Two Years Ago",
+    "John Peer-Reviewed This and Improved the Algorithm",
+    "John Benchmarked This Against Himself and Won",
+    "John Closed a Related PR Before Breakfast",
+    "John Nodded Approvingly Upon Reading This",
 ]
 
-def john_ify(title, idx):
-    """Append a John suffix to a headline."""
-    suffix = SUFFIXES[idx % len(SUFFIXES)]
-    # Avoid double-punctuation at the end
-    clean = title.rstrip(".!?")
-    return f"{clean} {suffix}"
+def fallback_john_ify(title, idx):
+    suffix = FALLBACK_SUFFIXES[idx % len(FALLBACK_SUFFIXES)]
+    return f"{title.rstrip('.!?')}, {suffix}"
+
+
+# ---------------------------------------------------------------------------
+# Claude-powered John-ification — one API call for the whole batch
+# ---------------------------------------------------------------------------
+def claude_john_ify(titles):
+    """
+    Send all headlines to Claude in one call.
+    Returns a list of John-ified headlines in the same order.
+    Falls back to suffix approach on any error.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        print("  No ANTHROPIC_API_KEY found, using fallback suffixes.")
+        return None
+
+    try:
+        import anthropic
+    except ImportError:
+        print("  anthropic package not installed, using fallback suffixes.")
+        return None
+
+    numbered = "\n".join(f"{i+1}. {t}" for i, t in enumerate(titles))
+
+    prompt = f"""You are writing headlines for "John News" — a parody of Hacker News where every story is about how brilliant, talented, and ahead-of-the-curve John is.
+
+Here are today's real Hacker News headlines. Rewrite each one to include a funny, specific reference to John being great. Rules:
+- Keep the core topic of the original headline intact so readers recognise it
+- Make the John reference feel earned and specific to THAT story, not generic
+- Vary the structure: sometimes John leads the headline, sometimes he appears at the end, sometimes mid-sentence
+- Be concise — HN headline length
+- No em dashes. Use commas, colons, or new sentences instead
+- Be funny. Dry wit works best
+- Return ONLY a JSON array of strings, one per headline, in the same order. No markdown, no explanation.
+
+Headlines:
+{numbered}"""
+
+    client = anthropic.Anthropic(api_key=api_key)
+    try:
+        message = client.messages.create(
+            model="claude-opus-4-6",
+            max_tokens=2048,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = message.content[0].text.strip()
+        # Strip markdown code fences if present
+        raw = re.sub(r"^```[a-z]*\n?", "", raw)
+        raw = re.sub(r"\n?```$", "", raw)
+        result = json.loads(raw)
+        if isinstance(result, list) and len(result) == len(titles):
+            return result
+        print(f"  Unexpected response shape, falling back.")
+        return None
+    except Exception as e:
+        print(f"  Claude API error: {e}, using fallback suffixes.")
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +156,7 @@ def fetch_hn_stories():
             pts, user, age, cmts = "1", "hnuser", "recently", "discuss"
 
         stories.append({
-            "title":    john_ify(title, i),
+            "title":    title,   # raw title; John-ification applied later
             "url":      url,
             "domain":   domain,
             "points":   pts,
@@ -283,9 +329,25 @@ def build_html(stories):
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     out = sys.argv[1] if len(sys.argv) > 1 else "index.html"
-    print("Fetching HN front page…")
+
+    print("Fetching HN front page...")
     stories = fetch_hn_stories()
     print(f"  Got {len(stories)} stories.")
+
+    # Ask Claude to write custom John-ifications for all headlines at once
+    raw_titles = [s["title"] for s in stories]
+    print("Asking Claude to John-ify headlines...")
+    john_titles = claude_john_ify(raw_titles)
+
+    if john_titles:
+        print("  Claude returned custom headlines.")
+        for s, t in zip(stories, john_titles):
+            s["title"] = t
+    else:
+        print("  Using fallback suffixes.")
+        for i, s in enumerate(stories):
+            s["title"] = fallback_john_ify(s["title"], i)
+
     html = build_html(stories)
     with open(out, "w", encoding="utf-8") as f:
         f.write(html)
