@@ -81,13 +81,16 @@ def fetch_hn_stories():
         r'class="titleline"><a href="([^"]+)">(.+?)</a>', content
     )
 
-    # Parse subtext: score, user, age, comments
+    # Parse item IDs from the athing rows (used for comment links)
+    item_ids = re.findall(r'class="athing submission" id="(\d+)"', content)
+
+    # Parse subtext: score, user, age, comments, comment item ID
     subtexts = re.findall(
         r'class="subline">.*?'
         r'<span class="score"[^>]*>(\d+) points?</span>'
         r'.*?class="hnuser">([^<]+)</a>'
         r'.*?class="age"[^>]*><a[^>]*>([^<]+)</a>'
-        r'.*?<a href="[^"]+">([^<]+?)(?:&nbsp;)?(?:comments?|discuss)</a>',
+        r'.*?<a href="item\?id=(\d+)">([^<]+?)(?:&nbsp;)?(?:comments?|discuss)</a>',
         content,
         flags=re.DOTALL,
     )
@@ -99,19 +102,22 @@ def fetch_hn_stories():
         domain = domain_m.group(1) if domain_m else ""
 
         if i < len(subtexts):
-            pts, user, age, cmts = subtexts[i]
+            pts, user, age, item_id, cmts = subtexts[i]
             cmts = cmts.strip().replace("\xa0", "")
         else:
+            # Fall back to item_ids list if subtext regex missed it
+            item_id = item_ids[i] if i < len(item_ids) else ""
             pts, user, age, cmts = "1", "hnuser", "recently", "discuss"
 
         stories.append({
-            "title":   john_ify(title, i),
-            "url":     url,
-            "domain":  domain,
-            "points":  pts,
-            "user":    user,
-            "age":     age,
+            "title":    john_ify(title, i),
+            "url":      url,
+            "domain":   domain,
+            "points":   pts,
+            "user":     user,
+            "age":      age,
             "comments": cmts,
+            "item_id":  item_id,
         })
 
     return stories
@@ -203,7 +209,8 @@ def render_story(i, s):
         f'<span class="score">{s["points"]} points</span> '
         f'by <a href="#" class="hnuser">{s["user"]}</a> '
         f'<span class="age"><a href="#">{s["age"]}</a></span> '
-        f'| <a href="#">hide</a> | <a href="#">{s["comments"]}&nbsp;comments</a>'
+        f'| <a href="#">hide</a> | '
+        f'<a href="https://news.ycombinator.com/item?id={s["item_id"]}">{s["comments"]}&nbsp;comments</a>'
         f'</span></td></tr>\n'
         f'<tr class="spacer" style="height:5px"></tr>'
     )
